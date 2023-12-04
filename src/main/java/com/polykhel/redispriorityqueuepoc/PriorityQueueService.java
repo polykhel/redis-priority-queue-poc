@@ -5,24 +5,26 @@ import org.redisson.api.RLock;
 import org.redisson.api.RPriorityQueue;
 import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RedissonClient;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.redisson.client.protocol.ScoredEntry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.Random;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
 public class PriorityQueueService {
 
-    private static final String QUEUE_NAME = "main_queue";
+    private static final String SHARD_LIST = "main_shards";
     public static final Random RANDOM = new Random();
 
     @Value("${spring.application.name}")
     private String appName;
+
+    @Value("${organization.weight:1}")
+    private int organizationWeight;
 
     private final RedissonClient redissonClient;
 
@@ -32,23 +34,34 @@ public class PriorityQueueService {
 
     // priority is determined by the Comparable/Comparator
 
-    @Scheduled(fixedDelay = 500)
+//    @Scheduled(fixedDelay = 500)
     public void publisher() {
-        enqueueWithPriority(new Event(UUID.randomUUID().toString(), String.valueOf(System.currentTimeMillis())));
+        enqueue(new Event(UUID.randomUUID().toString(), appName, organizationWeight, String.valueOf(System.currentTimeMillis())));
     }
 
-    public void enqueueWithPriority(Event item) {
-        RPriorityQueue<Event> priorityQueue = redissonClient.getPriorityQueue(QUEUE_NAME);
+    public void enqueue(Event item) {
+        RScoredSortedSet<String> shardList = redissonClient.getScoredSortedSet(SHARD_LIST);
+        shardList.add(item.getOrganizationWeight(), item.getOrganizationId());
+
+        RPriorityQueue<Event> priorityQueue = redissonClient.getPriorityQueue("queue:" + item.getOrganizationId());
         priorityQueue.add(item);
     }
 
     @Scheduled(fixedDelay = 1000)
     public void dequeueWithLock() throws InterruptedException {
-        RPriorityQueue<Event> priorityQueue = redissonClient.getPriorityQueue(QUEUE_NAME);
+        RScoredSortedSet<String> shardList = redissonClient.getScoredSortedSet(SHARD_LIST);
+
+        if (shardList.isEmpty()) {
+            log.info("{} queue is empty", appName);
+            return;
+        }
+
+        String shardId = getNextShardId(shardList);
+        RPriorityQueue<Event> priorityQueue = redissonClient.getPriorityQueue("queue:" + shardId);
 
         Event event = priorityQueue.poll();
         if (event != null) {
-            log.info("{} trying to consume {}", appName, event.getEventId());
+            log.info("{} trying to consume {} from shard {} organization {}", appName, event.getEventId(), shardId, event.getOrganizationId());
             RLock lock = redissonClient.getLock("eventLock:" + event.getEventId());
 
             // RLock has a lock watchdog that extends the expiration while lock holder Redisson instance is alive
@@ -68,6 +81,24 @@ public class PriorityQueueService {
                 log.warn("{} failed to acquired lock for {}", appName, event.getEventId());
             }
         }
+    }
+
+    public String getNextShardId(RScoredSortedSet<String> shardList) {
+        // remove empty shards
+
+        double totalWeight = shardList.entryRange(0, -1).stream().mapToDouble(ScoredEntry::getScore).sum();
+
+        double randomWeight = RANDOM.nextDouble() * totalWeight;
+
+        for (String shardId : shardList) {
+            randomWeight -= shardList.getScore(shardId);
+            if (randomWeight <= 0) {
+                return shardId;
+            }
+        }
+
+        // Fallback (should not reach here)
+        return shardList.first();
     }
 
     private void processEvent(Event event) throws InterruptedException {

@@ -15,12 +15,18 @@ public class Event implements Comparable<Event>, Serializable {
 
     private String eventId;
 
+    private String organizationId;
+
+    private int organizationWeight;
+
     private String priority;
 
     private String status;
 
-    public Event(String eventId, String priority) {
+    public Event(String eventId, String organizationId, int organizationWeight, String priority) {
         this.eventId = eventId;
+        this.organizationId = organizationId;
+        this.organizationWeight = organizationWeight;
         this.priority = priority;
         this.status = "PENDING";
     }

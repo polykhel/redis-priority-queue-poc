@@ -7,15 +7,15 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/queue")
 public class QueueController {
 
-    private PriorityQueueService priorityQueueService;
+    private final PriorityQueueService priorityQueueService;
 
     public QueueController(PriorityQueueService priorityQueueService) {
         this.priorityQueueService = priorityQueueService;
     }
 
     @PostMapping("/enqueue")
-    public ResponseEntity<String> enqueue(@RequestParam String item, @RequestParam String priority) {
-        priorityQueueService.enqueueWithPriority(new Event(item, priority));
+    public ResponseEntity<String> enqueue(@RequestBody Event event) {
+        priorityQueueService.enqueue(event);
         return ResponseEntity.ok("Item enqueued successfully");
     }
 }
